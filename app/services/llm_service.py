@@ -6,6 +6,7 @@ LLM 解读服务
 """
 import json
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -93,7 +94,8 @@ def build_prompt(
   ]
 }}
 
-严格只输出 JSON，不要有任何前缀或后缀文字。"""
+严格只输出 JSON，不要有任何前缀或后缀文字。不要使用 Markdown 代码块包装。
+所有字符串值中的换行请使用 \\n 转义，双引号请使用 \\" 转义。确保输出是可被 json.loads() 直接解析的合法 JSON。"""
 
 
 def analyze_with_llm(
@@ -161,16 +163,28 @@ def _parse_llm_response(raw: str, scan_id: str, scan_time_ms: int) -> ScanRespon
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        # 移除首尾的 ``` 行
         start = 1 if lines[0].startswith("```") else 0
         end = len(lines) - 1 if lines[-1].strip() == "```" else len(lines)
         cleaned = "\n".join(lines[start:end]).strip()
 
-    try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.error("LLM 响应 JSON 解析失败: %s\n原文: %s", e, raw[:500])
-        return _error_response(scan_id, scan_time_ms, f"LLM output parse error: {e}")
+    # 如果响应中混有非JSON文字，尝试提取最外层JSON对象
+    if not cleaned.startswith("{"):
+        match = re.search(r'\{[\s\S]*\}', cleaned)
+        if match:
+            cleaned = match.group(0)
+
+    # 多次尝试解析：原始 → 修复常见问题
+    data = None
+    for attempt_cleaned in [cleaned, _fix_json(cleaned)]:
+        try:
+            data = json.loads(attempt_cleaned)
+            break
+        except json.JSONDecodeError:
+            continue
+
+    if data is None:
+        logger.error("LLM 响应 JSON 解析失败\n原文前1000字: %s", raw[:1000])
+        return _error_response(scan_id, scan_time_ms, "LLM output JSON parse error")
 
     # 构建漏洞列表
     vulnerabilities = []
@@ -197,6 +211,23 @@ def _parse_llm_response(raw: str, scan_id: str, scan_time_ms: int) -> ScanRespon
         gas_optimizations=data.get("gas_optimizations", []),
         scan_time_ms=scan_time_ms,
     )
+
+
+def _fix_json(text: str) -> str:
+    """
+    尝试修复 LLM 输出中常见的 JSON 格式问题：
+    - 字符串值中未转义的换行符
+    - 字符串值中未转义的双引号
+    - 尾部多余逗号
+    """
+    # 修复字符串值内的未转义换行符（替换为 \\n）
+    # 匹配在双引号字符串内的原始换行
+    fixed = re.sub(r'(?<=": ")(.*?)(?="[,\s\n\r]*[}\]])',
+                   lambda m: m.group(0).replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t'),
+                   text, flags=re.DOTALL)
+    # 移除尾部逗号（如 ,] 或 ,}）
+    fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+    return fixed
 
 
 def _normalize_severity(severity: str) -> str:

@@ -103,6 +103,24 @@ curl -X POST https://your-app.railway.app/api/v1/scan \
 
 每个 IP 每分钟最多 10 次请求。超过限制返回 HTTP 429。
 
+## 计费集成（Web3 Pay）
+
+本API集成了Web3 Pay加密货币支付服务。启用后，每次扫描从用户余额中扣除费用。
+
+### 配置
+
+在.env中设置：
+- `WEB3PAY_ENABLED=true` — 启用计费
+- `WEB3PAY_URL=http://localhost:3000` — Web3 Pay服务地址
+- `SCAN_COST_CENTS=10` — 每次扫描费用（cents）
+
+### 使用流程
+
+1. 在Web3 Pay注册并获取API Key
+2. 充值USDC(Solana)或USDT(TRON)
+3. 使用Web3 Pay的API Key调用扫描API
+4. 每次扫描自动从余额中扣除$0.10
+
 ## 注意事项
 
 - 合约大小限制：默认 100KB（可通过 `MAX_CONTRACT_SIZE` 环境变量调整）

@@ -123,23 +123,28 @@ def analyze_with_llm(
 
     prompt = build_prompt(source_code, findings, contract_name, language)
 
+    # 先尝试带 response_format（OpenAI原生支持），失败则回退到不带的版本
+    # Claude兼容接口不一定支持 response_format 参数
     try:
         response = client.chat.completions.create(
             model=settings.llm_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            temperature=0.1,      # 低温度确保输出稳定
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
             max_tokens=4096,
-            response_format={"type": "json_object"},  # 强制 JSON 输出（如果模型支持）
+            response_format={"type": "json_object"},
         )
     except Exception as e:
-        logger.error("LLM 调用失败: %s", e)
-        # 返回错误响应而不是崩溃
-        return _error_response(scan_id, scan_time_ms, str(e))
+        logger.warning("LLM 调用失败（含 response_format），回退重试: %s", e)
+        try:
+            response = client.chat.completions.create(
+                model=settings.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=4096,
+            )
+        except Exception as e2:
+            logger.error("LLM 调用彻底失败: %s", e2)
+            return _error_response(scan_id, scan_time_ms, str(e2))
 
     raw_content = response.choices[0].message.content or ""
     logger.debug("LLM 原始响应（前500字）: %s", raw_content[:500])

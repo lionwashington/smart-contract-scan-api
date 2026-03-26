@@ -4,6 +4,7 @@
 - 简单内存限流（每 IP 每分钟最多 10 次）
 - 调用 Slither + LLM，返回 ScanResponse
 """
+import asyncio
 import time
 import uuid
 import logging
@@ -106,9 +107,9 @@ async def scan_contract(
 
     logger.info("开始扫描 scan_id=%s, ip=%s, contract=%s", scan_id, client_ip, body.contract_name)
 
-    # Step 1: Slither 静态分析
+    # Step 1: Slither 静态分析（同步调用，用 to_thread 避免阻塞事件循环）
     try:
-        slither_result = run_slither(body.source_code)
+        slither_result = await asyncio.to_thread(run_slither, body.source_code)
     except Exception as e:
         logger.exception("Slither 执行异常: %s", e)
         slither_result = {
@@ -118,10 +119,11 @@ async def scan_contract(
             "raw": "",
         }
 
-    # Step 2: LLM 深度分析
+    # Step 2: LLM 深度分析（同步调用，用 to_thread 避免阻塞事件循环）
     scan_time_ms = int(time.time() * 1000) - start_ms
 
-    response = analyze_with_llm(
+    response = await asyncio.to_thread(
+        analyze_with_llm,
         source_code=body.source_code,
         slither_result=slither_result,
         contract_name=body.contract_name,

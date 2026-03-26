@@ -17,6 +17,7 @@ from app.config import get_settings
 from app.models.schemas import ScanRequest, ScanResponse
 from app.services.slither_service import run_slither
 from app.services.llm_service import analyze_with_llm
+from app.services.billing_client import check_and_deduct
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,30 @@ async def scan_contract(
 
     # 限流
     _check_rate_limit(client_ip)
+
+    # Web3 Pay billing check
+    api_key_header = request.headers.get("Authorization", "")
+    billing_key = api_key_header.replace("Bearer ", "") if api_key_header.startswith("Bearer ") else ""
+
+    billing_result = await check_and_deduct(
+        api_key=billing_key,
+        endpoint="/api/v1/scan",
+        client_ip=client_ip,
+    )
+
+    if not billing_result["allowed"]:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": billing_result["error"],
+                "code": "PAYMENT_REQUIRED",
+                "balance_cents": billing_result["balance_cents"],
+                "deposit_info": {
+                    "message": "Please deposit funds at Web3 Pay to continue",
+                    "dashboard": f"{get_settings().web3pay_url}/dashboard/deposit",
+                },
+            },
+        )
 
     # 合约大小检查
     code_bytes = len(body.source_code.encode("utf-8"))

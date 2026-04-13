@@ -32,15 +32,18 @@ COPY --from=builder /install /usr/local
 # 安装 slither-analyzer 和 solc-select
 RUN pip install --no-cache-dir slither-analyzer solc-select
 
-# 安装并设置默认的 solc 版本（0.8.x 最常用）
-RUN solc-select install 0.8.20 && solc-select use 0.8.20
+# 创建非 root 用户（solc-select 状态需归属 appuser，否则运行时 Slither 找不到 solc）
+RUN useradd -m -u 1000 appuser
 
 # 复制应用代码
 COPY app/ ./app/
+RUN chown -R appuser:appuser /app
 
-# 创建非 root 用户运行（安全最佳实践）
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
+
+# 以 appuser 身份安装 solc-select 状态到 /home/appuser/.solc-select
+RUN solc-select install 0.8.20 && solc-select use 0.8.20
+ENV PATH="/home/appuser/.local/bin:${PATH}"
 
 EXPOSE 8000
 

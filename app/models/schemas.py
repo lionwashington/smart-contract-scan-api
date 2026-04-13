@@ -23,7 +23,7 @@ class Vulnerability(BaseModel):
 
 
 class ScanResponse(BaseModel):
-    """扫描响应模型"""
+    """扫描响应模型（同步 / 完成后）"""
     scan_id: str = Field(..., description="扫描任务 UUID")
     status: str = Field(..., description="状态：completed 或 error")
     summary: str = Field(..., description="一段话总结")
@@ -31,3 +31,18 @@ class ScanResponse(BaseModel):
     vulnerabilities: list[Vulnerability] = Field(default_factory=list, description="漏洞列表")
     gas_optimizations: list[str] = Field(default_factory=list, description="Gas 优化建议列表")
     scan_time_ms: int = Field(..., description="扫描耗时（毫秒）")
+
+
+class ScanQueuedResponse(BaseModel):
+    """异步提交响应：任务已入队"""
+    scan_id: str = Field(..., description="扫描任务 UUID，用于轮询结果")
+    status: str = Field("queued", description="queued")
+    poll_url: str = Field(..., description="轮询结果的 URL 路径")
+
+
+class ScanStatusResponse(BaseModel):
+    """异步任务状态查询响应"""
+    scan_id: str
+    status: str = Field(..., description="queued / running / completed / failed")
+    result: Optional[ScanResponse] = Field(None, description="完成后的扫描结果")
+    error: Optional[str] = Field(None, description="失败原因")

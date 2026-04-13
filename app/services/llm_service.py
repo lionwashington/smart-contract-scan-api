@@ -34,9 +34,22 @@ def build_prompt(
         else "Please output all analysis results in English."
     )
 
+    # 压缩 Slither 输出：只保留 LLM 推理必要字段，去掉冗长 description/raw
+    compressed = []
+    for f in slither_findings[:30]:  # 超过 30 条的部分通常重复信息
+        desc = (f.get("description") or "").strip()
+        if len(desc) > 400:
+            desc = desc[:400] + "..."
+        compressed.append({
+            "check": f.get("check"),
+            "impact": f.get("impact"),
+            "confidence": f.get("confidence"),
+            "location": f.get("location"),
+            "description": desc,
+        })
     slither_section = (
-        json.dumps(slither_findings, ensure_ascii=False, indent=2)
-        if slither_findings
+        json.dumps(compressed, ensure_ascii=False)
+        if compressed
         else "（Slither 未报告任何发现）"
     )
 
@@ -132,7 +145,7 @@ def analyze_with_llm(
             model=settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=4096,
+            max_tokens=2500,
             response_format={"type": "json_object"},
         )
     except Exception as e:
@@ -142,7 +155,7 @@ def analyze_with_llm(
                 model=settings.llm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=4096,
+                max_tokens=2500,
             )
         except Exception as e2:
             logger.error("LLM 调用彻底失败: %s", e2)

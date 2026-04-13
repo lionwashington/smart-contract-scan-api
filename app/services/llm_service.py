@@ -145,7 +145,7 @@ def analyze_with_llm(
             model=settings.llm_model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=2500,
+            max_tokens=4096,
             response_format={"type": "json_object"},
         )
     except Exception as e:
@@ -155,7 +155,7 @@ def analyze_with_llm(
                 model=settings.llm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=2500,
+                max_tokens=4096,
             )
         except Exception as e2:
             logger.error("LLM 调用彻底失败: %s", e2)
@@ -232,14 +232,48 @@ def _fix_json(text: str) -> str:
     - 字符串值中未转义的换行符
     - 字符串值中未转义的双引号
     - 尾部多余逗号
+    - max_tokens 截断导致的未闭合字符串 / 括号（防御性恢复）
     """
     # 修复字符串值内的未转义换行符（替换为 \\n）
-    # 匹配在双引号字符串内的原始换行
     fixed = re.sub(r'(?<=": ")(.*?)(?="[,\s\n\r]*[}\]])',
                    lambda m: m.group(0).replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t'),
                    text, flags=re.DOTALL)
     # 移除尾部逗号（如 ,] 或 ,}）
     fixed = re.sub(r',\s*([}\]])', r'\1', fixed)
+
+    # 截断恢复：若最后字符处于未闭合字符串/数组/对象，扫描并补齐。
+    # 遍历字符，跟踪括号栈和字符串状态，忽略转义字符。
+    in_string = False
+    escape = False
+    stack: list[str] = []
+    for ch in fixed:
+        if escape:
+            escape = False
+            continue
+        if ch == "\\" and in_string:
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch in "{[":
+            stack.append(ch)
+        elif ch == "}" and stack and stack[-1] == "{":
+            stack.pop()
+        elif ch == "]" and stack and stack[-1] == "[":
+            stack.pop()
+
+    if in_string:
+        fixed += '"'
+    # 去掉尾部悬挂的 `,` 或 `"key":`（键存在但没值）
+    fixed = fixed.rstrip()
+    fixed = re.sub(r',\s*$', '', fixed)
+    fixed = re.sub(r'"[^"\\]*"\s*:\s*$', '', fixed)
+    fixed = re.sub(r',\s*$', '', fixed)
+    while stack:
+        fixed += "}" if stack.pop() == "{" else "]"
     return fixed
 
 

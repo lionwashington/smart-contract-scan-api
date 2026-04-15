@@ -3,15 +3,16 @@
 - POST /scan           异步提交，立即返回 scan_id
 - POST /scan/sync      同步扫描，阻塞直到完成（给"一行 curl"卖点）
 - GET  /scan/{scan_id} 查询异步任务状态
+
+Auth 在 app.auth.auth_middleware 中完成。
 """
 import asyncio
 import time
 import uuid
 import logging
 from collections import defaultdict
-from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, Header, Depends, BackgroundTasks
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 
 from app.config import get_settings
 from app.models.schemas import (
@@ -44,17 +45,6 @@ def _check_rate_limit(ip: str) -> None:
             detail=f"Rate limit exceeded: max {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW}s per IP",
         )
     _rate_limit_store[ip].append(now)
-
-
-def _verify_api_key(authorization: Optional[str] = Header(None)) -> None:
-    settings = get_settings()
-    if not settings.api_key:
-        return
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Authorization header required")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or token != settings.api_key:
-        raise HTTPException(status_code=403, detail="Invalid API key")
 
 
 def _validate_body(body: ScanRequest, max_size: int) -> None:
@@ -125,7 +115,6 @@ async def scan_contract_async(
     request: Request,
     body: ScanRequest,
     background_tasks: BackgroundTasks,
-    _: None = Depends(_verify_api_key),
 ) -> ScanQueuedResponse:
     settings = get_settings()
     _check_rate_limit(_get_client_ip(request))
@@ -152,7 +141,6 @@ async def scan_contract_async(
 async def scan_contract_sync(
     request: Request,
     body: ScanRequest,
-    _: None = Depends(_verify_api_key),
 ) -> ScanResponse:
     settings = get_settings()
     _check_rate_limit(_get_client_ip(request))
@@ -175,7 +163,6 @@ async def scan_contract_sync(
 )
 async def get_scan_status(
     scan_id: str,
-    _: None = Depends(_verify_api_key),
 ) -> ScanStatusResponse:
     task = get_task_store().get(scan_id)
     if not task:

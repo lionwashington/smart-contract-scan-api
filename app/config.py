@@ -1,7 +1,7 @@
 """
 配置管理：从环境变量读取所有配置项
 """
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 
 
@@ -11,16 +11,23 @@ class Settings(BaseSettings):
     llm_api_key: str = "your-api-key"
     llm_model: str = "claude-sonnet-4-6"
 
-    # API 保护（可选）：设置后要求 Bearer Token 鉴权
+    # Auth 开关：默认 true（fail-safe，防止生产裸跑）
+    # 本地 dev 请在 .env 设 AUTH_ENABLED=false
+    auth_enabled: bool = True
+    # 直连 Bearer token（运维/监控用）
     api_key: str = ""
+    # RapidAPI 网关注入的 proxy secret
+    rapidapi_proxy_secret: str = ""
 
-    # 合约大小限制（字节），默认 100KB
     max_contract_size: int = 100 * 1024
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+        protected_namespaces=(),
+    )
 
 
 @lru_cache()

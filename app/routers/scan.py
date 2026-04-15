@@ -58,7 +58,7 @@ def _validate_body(body: ScanRequest, max_size: int) -> None:
         )
 
 
-async def _run_scan(scan_id: str, body: ScanRequest) -> ScanResponse:
+async def _run_scan(scan_id: str, body: ScanRequest, tier: str = "free") -> ScanResponse:
     """核心扫描流水线：Slither → LLM。"""
     start_ms = int(time.time() * 1000)
 
@@ -78,17 +78,18 @@ async def _run_scan(scan_id: str, body: ScanRequest) -> ScanResponse:
         language=body.language,
         scan_id=scan_id,
         scan_time_ms=scan_time_ms,
+        tier=tier,
     )
     response.scan_time_ms = int(time.time() * 1000) - start_ms
     return response
 
 
-async def _run_scan_background(scan_id: str, body: ScanRequest) -> None:
+async def _run_scan_background(scan_id: str, body: ScanRequest, tier: str = "free") -> None:
     """BackgroundTasks 调用入口：结果写 task_store。"""
     store = get_task_store()
     store.mark_running(scan_id)
     try:
-        response = await _run_scan(scan_id, body)
+        response = await _run_scan(scan_id, body, tier=tier)
         store.set_result(scan_id, response.model_dump())
         logger.info(
             "异步扫描完成 scan_id=%s 耗时=%dms 风险=%d 漏洞=%d",
@@ -102,6 +103,11 @@ async def _run_scan_background(scan_id: str, body: ScanRequest) -> None:
 def _get_client_ip(request: Request) -> str:
     ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
     return ip.split(",")[0].strip()
+
+
+def _tier_of(request: Request) -> str:
+    """从 middleware 写入的 request.state.tier 读 tier；缺失 → free。"""
+    return getattr(request.state, "tier", "free") or "free"
 
 
 @router.post(
@@ -121,10 +127,11 @@ async def scan_contract_async(
     _validate_body(body, settings.max_contract_size)
 
     scan_id = str(uuid.uuid4())
+    tier = _tier_of(request)
     get_task_store().create(scan_id)
-    background_tasks.add_task(_run_scan_background, scan_id, body)
+    background_tasks.add_task(_run_scan_background, scan_id, body, tier)
 
-    logger.info("入队 scan_id=%s contract=%s", scan_id, body.contract_name)
+    logger.info("入队 scan_id=%s contract=%s tier=%s", scan_id, body.contract_name, tier)
     return ScanQueuedResponse(
         scan_id=scan_id,
         status="queued",
@@ -147,8 +154,9 @@ async def scan_contract_sync(
     _validate_body(body, settings.max_contract_size)
 
     scan_id = str(uuid.uuid4())
-    logger.info("同步扫描 scan_id=%s contract=%s", scan_id, body.contract_name)
-    response = await _run_scan(scan_id, body)
+    tier = _tier_of(request)
+    logger.info("同步扫描 scan_id=%s contract=%s tier=%s", scan_id, body.contract_name, tier)
+    response = await _run_scan(scan_id, body, tier=tier)
     logger.info(
         "同步完成 scan_id=%s 耗时=%dms 风险=%d 漏洞=%d",
         scan_id, response.scan_time_ms, response.risk_score, len(response.vulnerabilities),

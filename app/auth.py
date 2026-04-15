@@ -23,6 +23,20 @@ logger = logging.getLogger(__name__)
 # 跳过 auth 的路径
 AUTH_EXEMPT_PATHS = {"/health", "/", "/docs", "/redoc", "/openapi.json"}
 
+# RapidAPI 订阅档位 → 内部 tier 标签
+RAPIDAPI_TIER_MAP = {
+    "BASIC": "free",
+    "PRO": "starter",
+    "ULTRA": "pro",
+    "MEGA": "business",
+}
+
+
+def resolve_tier(request: Request) -> str:
+    """从 X-RapidAPI-Subscription 提取 tier；无/非法 → free。"""
+    raw = request.headers.get("x-rapidapi-subscription") or ""
+    return RAPIDAPI_TIER_MAP.get(raw.strip().upper(), "free")
+
 
 def _is_protected(path: str) -> bool:
     if path in AUTH_EXEMPT_PATHS:
@@ -37,6 +51,9 @@ async def auth_middleware(
     call_next: Callable[[Request], Awaitable[Response]],
 ) -> Response:
     path = request.url.path
+    # 提前解析 tier（所有请求都附上，未来若有白名单路径也能用）
+    request.state.tier = resolve_tier(request)
+
     if not _is_protected(path):
         return await call_next(request)
 

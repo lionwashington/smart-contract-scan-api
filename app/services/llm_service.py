@@ -118,14 +118,17 @@ def analyze_with_llm(
     language: str,
     scan_id: str,
     scan_time_ms: int,
+    tier: str = "free",
 ) -> ScanResponse:
     """
     调用 LLM 对合约进行深度分析，返回结构化的 ScanResponse。
+    tier 决定使用哪个 LLM (base_url / api_key / model)。
     """
     settings = get_settings()
+    base_url, api_key, model = settings.resolve_llm(tier)
     client = OpenAI(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
+        api_key=api_key,
+        base_url=base_url,
     )
 
     findings = slither_result.get("findings", [])
@@ -142,7 +145,7 @@ def analyze_with_llm(
     # Claude兼容接口不一定支持 response_format 参数
     try:
         response = client.chat.completions.create(
-            model=settings.llm_model,
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
             max_tokens=4096,
@@ -152,19 +155,22 @@ def analyze_with_llm(
         logger.warning("LLM 调用失败（含 response_format），回退重试: %s", e)
         try:
             response = client.chat.completions.create(
-                model=settings.llm_model,
+                model=model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
                 max_tokens=4096,
             )
         except Exception as e2:
             logger.error("LLM 调用彻底失败: %s", e2)
-            return _error_response(scan_id, scan_time_ms, str(e2))
+            return _error_response(scan_id, scan_time_ms, str(e2), tier=tier, model=model)
 
     raw_content = response.choices[0].message.content or ""
     logger.debug("LLM 原始响应（前500字）: %s", raw_content[:500])
 
-    return _parse_llm_response(raw_content, scan_id, scan_time_ms)
+    parsed = _parse_llm_response(raw_content, scan_id, scan_time_ms)
+    parsed.tier = tier
+    parsed.model_used = model
+    return parsed
 
 
 def _parse_llm_response(raw: str, scan_id: str, scan_time_ms: int) -> ScanResponse:
@@ -292,7 +298,13 @@ def _normalize_severity(severity: str) -> str:
     return mapping.get(severity.lower(), "info")
 
 
-def _error_response(scan_id: str, scan_time_ms: int, error_msg: str) -> ScanResponse:
+def _error_response(
+    scan_id: str,
+    scan_time_ms: int,
+    error_msg: str,
+    tier: str | None = None,
+    model: str | None = None,
+) -> ScanResponse:
     """构建错误响应（不抛异常，保持 API 稳定）。"""
     return ScanResponse(
         scan_id=scan_id,
@@ -302,4 +314,6 @@ def _error_response(scan_id: str, scan_time_ms: int, error_msg: str) -> ScanResp
         vulnerabilities=[],
         gas_optimizations=[],
         scan_time_ms=scan_time_ms,
+        tier=tier,
+        model_used=model,
     )

@@ -1,7 +1,7 @@
 """
 Pydantic 数据模型：定义 API 请求和响应的数据结构
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional
 
 
@@ -24,6 +24,8 @@ class Vulnerability(BaseModel):
 
 class ScanResponse(BaseModel):
     """扫描响应模型（同步 / 完成后）"""
+    model_config = ConfigDict(protected_namespaces=())
+
     scan_id: str = Field(..., description="扫描任务 UUID")
     status: str = Field(..., description="状态：completed 或 error")
     summary: str = Field(..., description="一段话总结")
@@ -31,6 +33,8 @@ class ScanResponse(BaseModel):
     vulnerabilities: list[Vulnerability] = Field(default_factory=list, description="漏洞列表")
     gas_optimizations: list[str] = Field(default_factory=list, description="Gas 优化建议列表")
     scan_time_ms: int = Field(..., description="扫描耗时（毫秒）")
+    tier: Optional[str] = Field(None, description="订阅档位：free / starter / pro / business")
+    model_used: Optional[str] = Field(None, description="本次扫描使用的 LLM 模型标识（透明化）")
 
 
 class ScanQueuedResponse(BaseModel):

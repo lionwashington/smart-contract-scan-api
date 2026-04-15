@@ -1,14 +1,14 @@
 # Smart Contract Security Scan API
 
-一个基于 Slither + LLM 的智能合约安全扫描 REST API。提交 Solidity 源代码，返回结构化的安全审计报告。
+一个基于 audit-grade 多层规则分析 + language-model reasoning 的智能合约安全扫描 REST API。提交 Solidity 源代码，返回结构化的安全审计报告。
 
 > **Landing / marketing assets** live in the private freelancer parent monorepo (`freelancer/scanner-landing/`). This repo only contains application code + developer docs.
 
 ## 技术栈
 
-- **FastAPI** — 高性能 Python Web 框架
-- **Slither** — Trail of Bits 出品的 Solidity 静态分析工具
-- **OpenAI SDK** — 调用 LLM 进行深度解读（支持任意 OpenAI 兼容代理，如 Claude）
+- **FastAPI** + 标准 Python 技术栈
+- **Industry-grade static analysis** — 多层规则扫描 Solidity 合约
+- **Language-model reasoning** — 调用 LLM provider 做深度解读（标准 chat-completion 协议，provider 可切换）
 - **Railway** — 一键部署平台
 
 ## 本地运行
@@ -19,8 +19,8 @@
 # 安装 Python 依赖
 pip install -r requirements.txt
 
-# 安装 Slither 和 solc
-pip install slither-analyzer solc-select
+# 安装静态分析工具链 + solc（详见 requirements.txt 与 Dockerfile）
+pip install solc-select
 solc-select install 0.8.20
 solc-select use 0.8.20
 ```
@@ -49,7 +49,7 @@ uvicorn app.main:app --reload --port 8000
 3. 在 Railway 项目设置中添加以下环境变量：
    - `LLM_BASE_URL` — LLM 代理地址
    - `LLM_API_KEY` — API 密钥
-   - `LLM_MODEL` — 模型名（默认 `claude-sonnet-4-6`）
+   - `LLM_MODEL` — provider-specific model identifier（参考 provider 文档，档位可选 fast lightweight / advanced reasoning / audit-grade flagship）
    - `API_KEY` — （可选）保护你的 API 接口
 
 Railway 会自动检测 `railway.toml` 并用 Dockerfile 构建部署。
@@ -112,5 +112,5 @@ curl -X POST https://your-app.railway.app/api/v1/scan \
 ## 注意事项
 
 - 合约大小限制：默认 100KB（可通过 `MAX_CONTRACT_SIZE` 环境变量调整）
-- Slither 需要合约能够被 solc 编译，编译失败时将仅依赖 LLM 进行分析
+- 静态分析需要合约能够被 solc 编译，编译失败时将仅依赖 language-model 进行分析
 - 本服务为 MVP 版本，无持久化存储，重启后限流计数器会重置

@@ -9,7 +9,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.auth import auth_middleware
+from app.auth import install_auth
 from app.config import get_settings
 from app.routers import scan
 
@@ -37,8 +37,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Auth / tier middleware（必须在 CORS 之后注册）
-app.middleware("http")(auth_middleware)
+# Auth / tier middleware（必须在 CORS 之后注册）—— 走 api-billing-gateway
+install_auth(app)
 
 
 @app.on_event("startup")

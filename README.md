@@ -2,6 +2,8 @@
 
 一个基于 Slither + LLM 的智能合约安全扫描 REST API。提交 Solidity 源代码，返回结构化的安全审计报告。
 
+> **Landing / marketing assets** live in the private freelancer parent monorepo (`freelancer/scanner-landing/`). This repo only contains application code + developer docs.
+
 ## 技术栈
 
 - **FastAPI** — 高性能 Python Web 框架

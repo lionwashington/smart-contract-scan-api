@@ -44,8 +44,13 @@ def set_env(monkeypatch):
 
 @pytest.fixture
 def client(set_env):
-    """默认：AUTH_ENABLED=true, API_KEY=testkey, RAPIDAPI_PROXY_SECRET=testproxy"""
-    set_env(AUTH_ENABLED="true", API_KEY="testkey", RAPIDAPI_PROXY_SECRET="testproxy")
+    """默认：AUTH_ENABLED=true, API_KEY=testkey, RAPIDAPI_PROXY_SECRET=testproxy, API_MARKET_PROXY_SECRET=testabg"""
+    set_env(
+        AUTH_ENABLED="true",
+        API_KEY="testkey",
+        RAPIDAPI_PROXY_SECRET="testproxy",
+        API_MARKET_PROXY_SECRET="testabg",
+    )
     # mock 扫描流水线，避免真实调用 Slither / LLM
     from app.models.schemas import ScanResponse
 

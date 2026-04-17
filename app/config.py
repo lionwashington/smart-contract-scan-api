@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     api_key: str = ""
     # RapidAPI 网关注入的 proxy secret
     rapidapi_proxy_secret: str = ""
+    # API.market 网关（Custom Headers wizard）注入的 Abg-family secret
+    api_market_proxy_secret: str = ""
 
     # Per-tier 模型（为空 → fallback llm_model）
     llm_model_free: str = ""

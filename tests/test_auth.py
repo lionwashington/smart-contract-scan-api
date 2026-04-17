@@ -59,6 +59,39 @@ def test_auth_on_proxy_secret_wrong_401(client):
     assert r.status_code == 401
 
 
+def test_auth_on_api_market_secret_ok(client):
+    r = client.post(
+        "/api/v1/scan/sync",
+        json=SAMPLE,
+        headers={
+            "X-Abg-Proxy-Secret": "testabg",
+            "X-Abg-Tier": "pro",
+            "x-api-market-key": "cmo2laewe0001jj04uiwy3dk7",
+        },
+    )
+    assert r.status_code == 200, r.text
+
+
+def test_auth_on_api_market_secret_wrong_401(client):
+    r = client.post(
+        "/api/v1/scan/sync",
+        json=SAMPLE,
+        headers={"X-Abg-Proxy-Secret": "nope"},
+    )
+    assert r.status_code == 401
+
+
+def test_auth_on_api_market_missing_buyer_key_anonymous_still_200(client):
+    """API.market 买家 cuid 缺失时 adapter 填 external_user_id='anonymous'，
+    不应因此拒绝请求——仅使 rate-limit 退化成"该通道共享桶"。"""
+    r = client.post(
+        "/api/v1/scan/sync",
+        json=SAMPLE,
+        headers={"X-Abg-Proxy-Secret": "testabg", "X-Abg-Tier": "free"},
+    )
+    assert r.status_code == 200, r.text
+
+
 def test_auth_off_no_header_200_with_mode_header(client_open):
     r = client_open.post("/api/v1/scan/sync", json=SAMPLE)
     assert r.status_code == 200, r.text

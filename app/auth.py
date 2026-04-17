@@ -42,6 +42,15 @@ _TIER_MAP_ENUM = {
     "MEGA": PlanTier.BUSINESS,
 }
 
+# API.market seller 在 Custom Headers wizard 里填的是 Abg 约定值（free/starter/pro/business）；
+# adapter 内部会做 upper()，此处用大写 key。
+_API_MARKET_TIER_MAP = {
+    "FREE": PlanTier.FREE,
+    "STARTER": PlanTier.STARTER,
+    "PRO": PlanTier.PRO,
+    "BUSINESS": PlanTier.BUSINESS,
+}
+
 
 def resolve_tier(request: Request) -> str:
     raw = request.headers.get("x-rapidapi-subscription") or ""
@@ -67,6 +76,18 @@ def _build_adapters() -> list:
             user_header="X-RapidAPI-User",
             tier_header="X-RapidAPI-Subscription",
             tier_map=_TIER_MAP_ENUM,
+        ))
+    if s.api_market_proxy_secret:
+        # API.market Custom Headers wizard 注入 X-Abg-Proxy-Secret + X-Abg-Tier；
+        # 平台并不提供统一 user_id 头，这里用买家侧 x-api-market-key（cuid）做 external_user_id，
+        # 既能让 rate-limit 按买家隔离，又不要求平台合作。买家没传则 adapter fallback 到 "anonymous"。
+        adapters.append(ProxySecretAdapter(
+            name="api_market",
+            secret_value=s.api_market_proxy_secret,
+            secret_header="X-Abg-Proxy-Secret",
+            user_header="x-api-market-key",
+            tier_header="X-Abg-Tier",
+            tier_map=_API_MARKET_TIER_MAP,
         ))
     if s.api_key:
         adapters.append(StaticBearerAdapter(

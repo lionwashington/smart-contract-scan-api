@@ -40,6 +40,14 @@ class Settings(BaseSettings):
 
     max_contract_size: int = 100 * 1024
 
+    # ---- Rate limiting (per-user sliding window) ----
+    # REDIS_URL 为空 → fallback 进程内 limiter（不适合多实例，部署日志会 WARN）。
+    redis_url: str = ""
+    rate_limit_max: int = 10
+    rate_limit_window: int = 60
+    # Bearer 通道仅内部使用，独立桶，默认给较宽，防自用脚本误触发。
+    rate_limit_max_bearer: int = 600
+
     def resolve_llm(self, tier: str) -> tuple[str, str, str]:
         """根据 tier 返回 (base_url, api_key, model)。未配置字段 fallback 到全局。"""
         if tier not in VALID_TIERS:

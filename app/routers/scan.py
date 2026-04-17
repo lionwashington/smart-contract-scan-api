@@ -10,7 +10,6 @@ import asyncio
 import time
 import uuid
 import logging
-from collections import defaultdict
 
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 
@@ -24,27 +23,40 @@ from app.models.schemas import (
 from app.services.slither_service import run_slither
 from app.services.llm_service import analyze_with_llm
 from app.services.task_store import get_task_store
+from app.services.rate_limiter import get_rate_limiter
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# ---- 限流状态（内存，进程级别，MVP 够用） ----
-_rate_limit_store: dict[str, list[float]] = defaultdict(list)
-RATE_LIMIT_MAX = 10
-RATE_LIMIT_WINDOW = 60
+
+def _rate_limit_key(request: Request) -> tuple[str, int]:
+    """从 AuthContext 取 source + external_user_id 当 key；bearer 走独立更宽的桶。"""
+    s = get_settings()
+    ctx = getattr(request.state, "billing", None)
+    source = getattr(ctx, "source", None) or "anon"
+    user_id = getattr(ctx, "external_user_id", None) or _fallback_user(request)
+    key = f"rate:{source}:{user_id}"
+    max_req = s.rate_limit_max_bearer if source == "bearer" else s.rate_limit_max
+    return key, max_req
 
 
-def _check_rate_limit(ip: str) -> None:
-    now = time.time()
-    window_start = now - RATE_LIMIT_WINDOW
-    _rate_limit_store[ip] = [ts for ts in _rate_limit_store[ip] if ts > window_start]
-    if len(_rate_limit_store[ip]) >= RATE_LIMIT_MAX:
+def _fallback_user(request: Request) -> str:
+    """AuthContext 缺失时（豁免路径/disabled-test）退回 IP。"""
+    ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+    return ip.split(",")[0].strip()
+
+
+async def _enforce_rate_limit(request: Request) -> None:
+    s = get_settings()
+    key, max_req = _rate_limit_key(request)
+    retry_after = await get_rate_limiter().check(key, max_req, s.rate_limit_window)
+    if retry_after is not None:
         raise HTTPException(
             status_code=429,
-            detail=f"Rate limit exceeded: max {RATE_LIMIT_MAX} requests per {RATE_LIMIT_WINDOW}s per IP",
+            detail=f"Rate limit exceeded: max {max_req} requests per {s.rate_limit_window}s",
+            headers={"Retry-After": str(retry_after)},
         )
-    _rate_limit_store[ip].append(now)
 
 
 def _validate_body(body: ScanRequest, max_size: int) -> None:
@@ -100,11 +112,6 @@ async def _run_scan_background(scan_id: str, body: ScanRequest, tier: str = "fre
         store.set_error(scan_id, str(e))
 
 
-def _get_client_ip(request: Request) -> str:
-    ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
-    return ip.split(",")[0].strip()
-
-
 def _tier_of(request: Request) -> str:
     """从 middleware 写入的 request.state.tier 读 tier；缺失 → free。"""
     return getattr(request.state, "tier", "free") or "free"
@@ -123,7 +130,7 @@ async def scan_contract_async(
     background_tasks: BackgroundTasks,
 ) -> ScanQueuedResponse:
     settings = get_settings()
-    _check_rate_limit(_get_client_ip(request))
+    await _enforce_rate_limit(request)
     _validate_body(body, settings.max_contract_size)
 
     scan_id = str(uuid.uuid4())
@@ -150,7 +157,7 @@ async def scan_contract_sync(
     body: ScanRequest,
 ) -> ScanResponse:
     settings = get_settings()
-    _check_rate_limit(_get_client_ip(request))
+    await _enforce_rate_limit(request)
     _validate_body(body, settings.max_contract_size)
 
     scan_id = str(uuid.uuid4())

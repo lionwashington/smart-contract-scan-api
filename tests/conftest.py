@@ -20,6 +20,15 @@ def _reset_settings_cache() -> None:
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter_singleton():
+    """每个测试前后清空 rate-limiter 单例，避免跨 test env 污染。"""
+    from app.services.rate_limiter import reset_rate_limiter
+    reset_rate_limiter()
+    yield
+    reset_rate_limiter()
+
+
 @pytest.fixture
 def set_env(monkeypatch):
     """用法：set_env(AUTH_ENABLED="false", API_KEY="x")"""

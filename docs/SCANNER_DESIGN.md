@@ -47,7 +47,8 @@ Smart Contract Scan API 的鉴权、计费、限流、健康检查与多实例�
 1. 路径在豁免集合 (`/health`, `/health/live`, `/`, `/docs`, `/redoc`, `/openapi.json`) → 直接放行。
 2. `AUTH_ENABLED=false` → 构造 `AuthContext(source="disabled", external_user_id="dev", tier=free)`，响应打 `X-Auth-Mode: disabled-test`。
 3. 否则遍历已注册 adapter 列表，匹配到的第一个 adapter 负责认证：
-   - `ProxySecretAdapter`（RapidAPI / 未来 Zyla 同款）：验 `X-RapidAPI-Proxy-Secret`，读 `X-RapidAPI-User`（external_user_id）+ `X-RapidAPI-Subscription`（tier）。
+   - `ProxySecretAdapter(name="rapidapi")`：验 `X-RapidAPI-Proxy-Secret`，读 `X-RapidAPI-User`（external_user_id）+ `X-RapidAPI-Subscription`（tier）。
+   - `ProxySecretAdapter(name="api_market")`：验 `X-Abg-Proxy-Secret`，读买家侧 `x-api-market-key`（external_user_id，cuid）+ `X-Abg-Tier`（tier，values: `free`/`starter`/`pro`/`business`）。买家 cuid 缺失时 external_user_id 退化为 `"anonymous"`（共享桶）。
    - `StaticBearerAdapter`（bearer）：验 `Authorization: Bearer <API_KEY>`，external_user_id 固定为 "owner"。
 4. 无任何 adapter 匹配 → 401 `AUTH_REQUIRED`（不暴露 adapter 细节）。
 
@@ -130,12 +131,14 @@ RateLimiter (Protocol)
 
 | Gateway | 状态 | 接入方式 | 配额侧 | 备注 |
 |---------|------|----------|--------|------|
-| **RapidAPI** | ✅ live | `ProxySecretAdapter` | platform-edge | 首发网关，付费档 Free / Starter / Pro / Business |
-| **Bearer（内部）** | ✅ live | `StaticBearerAdapter` | 无（仅 rate-limit） | Lion 运维 / 监控 / 冒烟用，不对外发布 |
-| **Zyla** | ⏳ 待 billing-researcher 确认 | 预计复用 `ProxySecretAdapter`（RapidAPI 同款 header 族） | platform-edge | 研究确证 header 族 + quota 上报后接入 |
-| APYHub / APILayer / API.market | ⏳ 调研中 | 视 quota 支持决定是否接入 | — | 不支持 platform-edge quota 的网关 v0 不上 |
+| **RapidAPI** | ✅ live | `ProxySecretAdapter`（`X-RapidAPI-Proxy-Secret` / `X-RapidAPI-User` / `X-RapidAPI-Subscription`） | platform-edge | 首发主力网关，付费档 Free / Starter / Pro / Business |
+| **Bearer（内部）** | ✅ live | `StaticBearerAdapter`（`Authorization: Bearer …`） | 无（仅 rate-limit） | Lion 运维 / 监控 / 冒烟用，不对外发布 |
+| **API.market** | 🟡 v1-ready（已注册、未上线） | `ProxySecretAdapter`（`X-Abg-Proxy-Secret` / `X-Abg-Tier`，买家侧 `x-api-market-key` 作 external_user_id） | platform-edge | Seller Studio 的 Custom Headers wizard 粘 `API_MARKET_PROXY_SECRET`；买家 cuid 缺失时退化为 `anonymous` 共享桶 |
+| **APILayer** | 🔜 v2（阻塞中） | 待 Trial 实测确认 header 族；预计复用 `ProxySecretAdapter` | platform-edge | billing-researcher trial verification 未完成（账号/审核阻塞） |
+| **Zyla** | 📅 future | 预计复用 `ProxySecretAdapter`（RapidAPI 同款 header 族） | platform-edge | 暂时不接，待 RapidAPI+API.market 双通道稳定后再启动 |
+| ~~APYHub~~ | ❌ 放弃 | — | — | 研究结论：不满足自带配额要求；不接入 |
 
-> v0 整体原则（Lion 2026-04-17）：**只接入自己承担配额管理的网关**。不承担配额的 gateway 留给 v1（那时再评估要不要 scanner 自建配额台）。
+> v0 原则（Lion 2026-04-17）：**只接入自己承担配额管理的网关**。没有 platform-edge quota 的网关（如 APYHub）直接放弃；platform-edge quota 的网关（RapidAPI / API.market / APILayer / Zyla）按流量价值排序分 v1 / v2 / future 三档滚动接入。
 
 ---
 
@@ -157,6 +160,7 @@ RateLimiter (Protocol)
 | `AUTH_ENABLED` | ⚠ 生产务必 `true` | `true` | 总开关。false 下所有请求放行并打 `X-Auth-Mode: disabled-test` |
 | `API_KEY` | 选 | `""` | 内部 bearer token（openssl rand -hex 32） |
 | `RAPIDAPI_PROXY_SECRET` | RapidAPI 上必须 | `""` | RapidAPI Dashboard → API Settings → "Secret for your API" 同值 |
+| `API_MARKET_PROXY_SECRET` | API.market 上必须 | `""` | API.market Seller Studio → Plan → Custom Headers wizard 里 `X-Abg-Proxy-Secret` 字段同值；未上线前留空 |
 | `REDIS_URL` | 多实例必须 | `""` | 空 → InMemory fallback（WARN log，只适合单实例） |
 | `RATE_LIMIT_WINDOW` | 选 | `60` | 窗口秒数 |
 | `RATE_LIMIT_MAX` | 选 | `10` | marketplace 源每窗口最大请求数 |

@@ -107,7 +107,7 @@ curl -X POST https://your-app.railway.app/api/v1/scan \
 
 ## 计费 / 订阅
 
-计费由 RapidAPI Hub 托管（Free 100/月、Hobby $9 2K/月、Pro $29 10K/月）。自托管版无内置计费，由 `API_KEY` 做访问控制即可。
+计费由 RapidAPI Hub 托管（Free 1/月、Starter $48.9 / 100、Pro $134.9 / 300、Business $399 / 1,000，另支持 $9.9 单次购买）。自托管版无内置计费，由 `API_KEY` 做访问控制即可。
 
 ## 注意事项
 

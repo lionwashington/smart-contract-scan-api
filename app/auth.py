@@ -26,7 +26,7 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-AUTH_EXEMPT_PATHS = {"/health", "/", "/docs", "/redoc", "/openapi.json"}
+AUTH_EXEMPT_PATHS = {"/health", "/health/live", "/", "/docs", "/redoc", "/openapi.json"}
 
 RAPIDAPI_TIER_MAP = {
     "BASIC": "free",

@@ -65,15 +65,15 @@ def test_auth_off_no_header_200_with_mode_header(client_open):
     assert r.headers.get("x-auth-mode") == "disabled-test"
 
 
-def test_health_always_open_auth_on(client):
-    r = client.get("/health")
+def test_health_live_always_open_auth_on(client):
+    r = client.get("/health/live")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
     assert "x-auth-mode" not in {k.lower() for k in r.headers.keys()}
 
 
-def test_health_always_open_auth_off(client_open):
-    r = client_open.get("/health")
+def test_health_live_always_open_auth_off(client_open):
+    r = client_open.get("/health/live")
     assert r.status_code == 200
 
 

@@ -134,11 +134,11 @@ RateLimiter (Protocol)
 | **RapidAPI** | ✅ live | `ProxySecretAdapter`（`X-RapidAPI-Proxy-Secret` / `X-RapidAPI-User` / `X-RapidAPI-Subscription`） | platform-edge | 首发主力网关，付费档 Free / Starter / Pro / Business |
 | **Bearer（内部）** | ✅ live | `StaticBearerAdapter`（`Authorization: Bearer …`） | 无（仅 rate-limit） | Lion 运维 / 监控 / 冒烟用，不对外发布 |
 | **API.market** | 🟡 v1-ready（已注册、未上线） | `ProxySecretAdapter`（`X-Abg-Proxy-Secret` / `X-Abg-Tier`，买家侧 `x-api-market-key` 作 external_user_id） | platform-edge | Seller Studio 的 Custom Headers wizard 粘 `API_MARKET_PROXY_SECRET`；买家 cuid 缺失时退化为 `anonymous` 共享桶 |
-| **APILayer** | 🔜 v2（阻塞中） | 待 Trial 实测确认 header 族；预计复用 `ProxySecretAdapter` | platform-edge | billing-researcher trial verification 未完成（账号/审核阻塞） |
 | **Zyla** | 📅 future | 预计复用 `ProxySecretAdapter`（RapidAPI 同款 header 族） | platform-edge | 暂时不接，待 RapidAPI+API.market 双通道稳定后再启动 |
+| ~~APILayer~~ | 🚫 out-of-scope v0.1 | — | — | curation-only marketplace（Idera 集团），无 self-serve publisher 路径；上架需 Contact Sales 商务洽谈（≥1-2 周，门槛未知）。独立商务决策，不在 v2 自动触发扩展列表 |
 | ~~APYHub~~ | ❌ 放弃 | — | — | 研究结论：不满足自带配额要求；不接入 |
 
-> v0 原则（Lion 2026-04-17）：**只接入自己承担配额管理的网关**。没有 platform-edge quota 的网关（如 APYHub）直接放弃；platform-edge quota 的网关（RapidAPI / API.market / APILayer / Zyla）按流量价值排序分 v1 / v2 / future 三档滚动接入。
+> v0 原则（Lion 2026-04-17）：**只接入自己承担配额管理、且有 self-serve publisher 路径的网关**。一期（v0.1）scope 收敛至 RapidAPI + API.market 双通道；Zyla 留给 future；APILayer 改走商务洽谈独立决策；APYHub 架构不匹配直接放弃。
 
 ---
 

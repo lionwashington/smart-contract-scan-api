@@ -1,160 +1,195 @@
-# Scanner — Auth & Deployment Design
+# Scanner — Design
 
-统一扫描服务的鉴权开关、RapidAPI 网关流量校验、直连测试通道的完整设计。**必须先实现并验证完毕**再提交 RapidAPI。
+Smart Contract Scan API 的鉴权、计费、限流、健康检查与多实例部署的完整设计。
+**必须先实现并通过 §8 自查清单**再提交 marketplace。
+
+---
 
 ## 1. 架构
 
 ```
-                       ┌──────────────────────────┐
- 付费用户              │                          │
- ─────────> RapidAPI ──┤  adds header:            │
-            Gateway    │  X-RapidAPI-Proxy-Secret ├──> Railway (FastAPI)
-                       │                          │    smart-contract-scan-api
-                       └──────────────────────────┘         │
- 运维/Lion 直连                                              │
- ───────────────────> Authorization: Bearer <API_KEY> ──────┘
-                                                            │
- 测试期临时（AUTH_ENABLED=false）                            │
- ───────────────────> 无 header 也允许 ─────────────────────┘
+ ┌────────────── 多 marketplace 付费用户 ────────────────┐
+ │                                                       │
+ │  RapidAPI ──┐                                         │
+ │             │                                         │
+ │  Zyla API ──┼── adds gateway-specific header ─────┐   │
+ │             │   (e.g. X-RapidAPI-Proxy-Secret)    │   │
+ │  …（未来）──┘                                     │   │
+ │                                                   ▼   │
+ └───────────────────────────────────────── Railway (FastAPI) ──┐
+                                              scanner            │
+ 运维/监控/Lion 直连                             │                │
+ ──────────────────> Authorization: Bearer <API_KEY> ───────────┘
+                                                 │
+ Dev 测试期临时 (AUTH_ENABLED=false)             │
+ ──────────────────> 任何请求直放行 ─────────────┘
+                                                 │
+                                           ┌─────▼──────┐
+                                           │ Redis      │
+                                           │ (sliding-  │
+                                           │ window     │
+                                           │ rate-limit)│
+                                           └────────────┘
 ```
 
-两条合法路径（生产）：
-- **RapidAPI 网关**：用户付费给 RapidAPI，RapidAPI 代理请求并自动注入 `X-RapidAPI-Proxy-Secret: <你在后台设的值>`
-- **直连运维**：你本人用 `Authorization: Bearer <API_KEY>` 打 Railway URL（监控、调试、batch）
+**关键设计点**
+- **单一后端，多网关**：用户感知的 marketplace 不同，scanner 侧只看 `AuthContext.source`，通过 `api-billing-gateway` 的 adapter 注册表分发。
+- **Bearer 通道为内部专用**：`source="bearer"` 永远不对公众暴露；给 Lion 运维/监控/冒烟用。
+- **多实例 = Redis 必需**：rate-limit 必须跨实例共享桶，否则每实例独自计数，真实阈值 = 配置值 × 实例数。
+- **Platform-edge quota for now**：订阅/配额由 marketplace（RapidAPI、Zyla…）自己执行；scanner 只做 **防滥用型 rate-limit**，不自己管"每月 300 次"这种配额。详见 §4。
 
-## 2. Auth 流程
+---
 
-```
-请求进入 (除 /health 外所有 /api/v1/*)
-   │
-   ▼
-AUTH_ENABLED ?
-   │
-   ├── false (测试模式)
-   │      │
-   │      ▼
-   │   在 response header 写 X-Auth-Mode: disabled-test
-   │   logger.warning 记录 "unauth request from <ip>"
-   │   放行
-   │
-   └── true (生产模式)
-          │
-          ▼
-       header X-RapidAPI-Proxy-Secret == RAPIDAPI_PROXY_SECRET ?
-          │
-          ├── yes → 放行（tag source=rapidapi）
-          │
-          └── no → header Authorization: Bearer <token>
-                     │
-                     ├── token == API_KEY → 放行（tag source=direct）
-                     │
-                     └── 其它 → 401 {"code":"AUTH_REQUIRED","detail":"..."}
-```
+## 2. Auth 与 AuthContext
 
-## 3. env var 清单
+请求鉴权由 `api-billing-gateway` 库驱动（见 `app/auth.py:install_auth`）。中间件对每次请求：
 
-| env var | 用途 | 默认 | 示例 |
-|---|---|---|---|
-| `AUTH_ENABLED` | 总开关。`true`/`false`（大小写不敏感） | **见下节建议** | `true` |
-| `API_KEY` | 直连通道的 Bearer token（你自己用） | `""` | `sk_live_a1b2...` 32 字节 hex |
-| `RAPIDAPI_PROXY_SECRET` | RapidAPI 网关注入的 header 值 | `""` | `rapi_xyz...` 32 字节 hex |
-| `LLM_BASE_URL` | 已有 | `https://api.openai.com/v1` | `https://api.fireworks.ai/inference/v1` |
-| `LLM_MODEL` | 已有 | `claude-sonnet-4-6` | `accounts/fireworks/models/deepseek-v3p1` |
+1. 路径在豁免集合 (`/health`, `/health/live`, `/`, `/docs`, `/redoc`, `/openapi.json`) → 直接放行。
+2. `AUTH_ENABLED=false` → 构造 `AuthContext(source="disabled", external_user_id="dev", tier=free)`，响应打 `X-Auth-Mode: disabled-test`。
+3. 否则遍历已注册 adapter 列表，匹配到的第一个 adapter 负责认证：
+   - `ProxySecretAdapter`（RapidAPI / 未来 Zyla 同款）：验 `X-RapidAPI-Proxy-Secret`，读 `X-RapidAPI-User`（external_user_id）+ `X-RapidAPI-Subscription`（tier）。
+   - `StaticBearerAdapter`（bearer）：验 `Authorization: Bearer <API_KEY>`，external_user_id 固定为 "owner"。
+4. 无任何 adapter 匹配 → 401 `AUTH_REQUIRED`（不暴露 adapter 细节）。
 
-生成 secret：`openssl rand -hex 32`
+认证产物是 `AuthContext`，字段：
 
-### 默认值：两个选项，Lion 选
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `source` | `"rapidapi" \| "bearer" \| "zyla" \| "disabled"` | 网关来源（即 adapter 名） |
+| `external_user_id` | `str` | 网关侧的用户 ID；rapidapi 用 `X-RapidAPI-User`，bearer 固定 "owner" |
+| `tier` | `PlanTier` enum | `FREE / STARTER / PRO / BUSINESS` |
+| `raw_tier` | `str` | 未归一化的原值（日志追溯用） |
+| `mode` | `str` | adapter 自填，审计用 |
 
-- **选项 A（fail-safe 向"开放"）**：`AUTH_ENABLED` 未设置 → false。
-  - 好处：本地 dev、首次部署不会被锁死。
-  - 坏处：Railway 如果忘了设，生产也是开的——**这正是我们现在的坑**。
-- **选项 B（fail-safe 向"关闭"）** ← **推荐**：`AUTH_ENABLED` 未设置 → true，但如果 `API_KEY` 和 `RAPIDAPI_PROXY_SECRET` 都为空，启动时 `logger.critical` 并仍然 401 所有请求。
-  - 好处：生产默认安全；忘了配 secret = 服务直接拒所有请求，一眼能发现。
-  - 坏处：本地 dev 必须显式 `AUTH_ENABLED=false`（可写进 `.env.example`）。
+中间件把 `ctx` 写进 `request.state.billing`，下游（LLM routing、rate-limit）就地取用。
 
-推荐 **B**，因为这次教训就是"静默放行"的。Dev 麻烦一次，永远不再裸跑生产。
+**RapidAPI tier 映射**（`app/auth.py:RAPIDAPI_TIER_MAP`）：
 
-## 4. 代码改动
+| `X-RapidAPI-Subscription` | `tier` |
+|---------------------------|--------|
+| BASIC | free |
+| PRO | starter |
+| ULTRA | pro |
+| MEGA | business |
+| *其它 / 空* | free（降级保底） |
 
-| 文件 | 改动 | 行数 |
-|---|---|---|
-| `app/config.py` | 加 `auth_enabled: bool = True`（或 False，见上），`rapidapi_proxy_secret: str = ""` | +2 |
-| `app/routers/scan.py` | 重写 `_verify_api_key` 函数 | ~25 |
-| `app/main.py` | 启动时 log 当前 auth 模式（便于 Railway logs 确认） | +5 |
-| `.env.example` | 新增（文档） | +10 |
-| `tests/test_auth.py` | 4 种组合 unit test（见 §6） | ~60 |
+---
 
-关键函数（`scan.py:49`）重写：
+## 3. Tier-based LLM Routing
+
+`Settings.resolve_llm(tier)` 按 tier 取 `(base_url, api_key, model)`；per-tier 字段为空 → fallback 到全局 `LLM_*`。
+
+典型搭法（成本分层）：
+- `free / starter` → 便宜快模型（Fireworks DeepSeek 等）
+- `pro / business` → Claude Sonnet 或同级
+
+handler 从 `request.state.tier`（middleware 写入，等于 `ctx.tier.value`）取 tier 传给 LLM 服务。`_tier_of(request)` 是唯一入口。
+
+---
+
+## 4. Quota & Rate Limiting
+
+### 4.1 职责分层
+
+| 层 | 负责 | 机制 |
+|----|------|------|
+| **Marketplace (RapidAPI, Zyla, …)** | 订阅配额（"Pro 档每月 300 次"）、超额计费、账单分成 | 网关自己的计量台，**scanner 不感知** |
+| **Scanner self-hosted** | 防滥用型 **rate-limit**（60s 内 N 次），防 DoS、防卡住 LLM 池 | Redis 滑动窗口 |
+
+MVP 阶段 scanner **不自己管月度配额**——靠 marketplace 的 platform-edge quota。未来若要跨 gateway 同步配额才会开新模块（见 §9）。
+
+### 4.2 rate-limit 实现
+
+代码：`app/services/rate_limiter.py`。
 
 ```python
-def _verify_api_key(
-    request: Request,
-    authorization: Optional[str] = Header(None),
-    x_rapidapi_proxy_secret: Optional[str] = Header(None, alias="X-RapidAPI-Proxy-Secret"),
-) -> None:
-    s = get_settings()
-    if not s.auth_enabled:
-        logger.warning("unauth request (AUTH_ENABLED=false) path=%s ip=%s",
-                       request.url.path, request.client.host if request.client else "?")
-        return
-    # 生产模式
-    if s.rapidapi_proxy_secret and x_rapidapi_proxy_secret == s.rapidapi_proxy_secret:
-        return
-    if s.api_key and authorization:
-        scheme, _, token = authorization.partition(" ")
-        if scheme.lower() == "bearer" and token == s.api_key:
-            return
-    raise HTTPException(
-        status_code=401,
-        detail={"code": "AUTH_REQUIRED",
-                "message": "Request must come via RapidAPI or carry a valid direct API key."},
-    )
+RateLimiter (Protocol)
+ ├── InMemoryRateLimiter   # dev / 单实例 / fallback
+ └── RedisRateLimiter      # prod（多实例必需）
 ```
 
-总工作量：**~2h**（含单测 + Railway 部署验证）。
+- **Key**：`rate:{ctx.source}:{ctx.external_user_id}` — 每个 marketplace 用户一个独立桶，RapidAPI 共享代理 IP 不会造成集体 429。
+- **桶容量**：
+  - 默认（marketplace 源）：`RATE_LIMIT_MAX` / `RATE_LIMIT_WINDOW`（默认 10 / 60s）
+  - bearer 源：`RATE_LIMIT_MAX_BEARER`（默认 600 / 60s，放宽是因为这条路只给自用脚本走）
+- **算法**：Redis sorted-set 滑动窗口，Lua 脚本原子化 `ZREMRANGEBYSCORE + ZCARD + ZADD + EXPIRE`。EVALSHA 缓存避免每次送 Lua body。
+- **Fail-open**：Redis 异常 → log error + 放行。理由：marketplace（尤其 Zyla，SLA <95% 归零分成）对 503 极敏感，短暂越限代价远小于被踢出服务目录。
 
-## 5. Railway 操作指南（给 Lion）
+### 4.3 fallback 行为
 
-1. `openssl rand -hex 32`（跑两次，得两个值）
-2. Railway Dashboard → 服务 → Variables：
-   - `AUTH_ENABLED=true`
-   - `API_KEY=<第一个随机值>`      ← 你自己收好，别提交 git
-   - `RAPIDAPI_PROXY_SECRET=<第二个随机值>`  ← 待 RapidAPI 后台同步填
-3. 保存 → 自动 redeploy（~90s）
-4. Deployments 状态转 active 后跑 §6 测试矩阵
-5. 上 RapidAPI Provider Dashboard → API Settings → "Secret for your API" 填**第二个值**（和 Railway `RAPIDAPI_PROXY_SECRET` 一致）
+| 场景 | 行为 |
+|------|------|
+| `REDIS_URL` 为空 | InMemoryRateLimiter；启动 WARN；多实例会各算各的（不要跑 prod） |
+| redis 包 import 失败 | 同上，启动 ERROR |
+| Redis 运行期挂掉 | 每次 check 都 log error 放行（fail-open） |
+| `AuthContext` 缺失（豁免路径偶发、disabled 模式） | 退化成按 IP 限流（同 `X-Forwarded-For` 首段） |
 
-## 6. 测试矩阵（4 种组合）
+---
 
-`BASE=https://smart-contract-scan-api-production.up.railway.app`
+## 5. 支持的网关（v0）
 
-| # | AUTH_ENABLED | 请求携带 | 期望 | 命令 |
-|---|---|---|---|---|
-| 1 | true | 无 header | **401** `AUTH_REQUIRED` | `curl -s -o /dev/null -w "%{http_code}" $BASE/api/v1/scan/sync -d '{...}'` |
-| 2 | true | `Authorization: Bearer <API_KEY>` | **200** | `curl -H "Authorization: Bearer $API_KEY" ...` |
-| 3 | true | `X-RapidAPI-Proxy-Secret: <SECRET>` | **200** | `curl -H "X-RapidAPI-Proxy-Secret: $SECRET" ...` |
-| 4 | false | 无 header | **200** + `X-Auth-Mode: disabled-test` | `curl -i ... \| grep -i x-auth-mode` |
-| 5 | true | `Authorization: Bearer wrong` | **401** | — |
-| 6 | true | `X-RapidAPI-Proxy-Secret: wrong` | **401** | — |
+| Gateway | 状态 | 接入方式 | 配额侧 | 备注 |
+|---------|------|----------|--------|------|
+| **RapidAPI** | ✅ live | `ProxySecretAdapter` | platform-edge | 首发网关，付费档 Free / Starter / Pro / Business |
+| **Bearer（内部）** | ✅ live | `StaticBearerAdapter` | 无（仅 rate-limit） | Lion 运维 / 监控 / 冒烟用，不对外发布 |
+| **Zyla** | ⏳ 待 billing-researcher 确认 | 预计复用 `ProxySecretAdapter`（RapidAPI 同款 header 族） | platform-edge | 研究确证 header 族 + quota 上报后接入 |
+| APYHub / APILayer / API.market | ⏳ 调研中 | 视 quota 支持决定是否接入 | — | 不支持 platform-edge quota 的网关 v0 不上 |
 
-`/health` 在所有组合下都必须 200（RapidAPI 健康探针 + 监控需要）。
+> v0 整体原则（Lion 2026-04-17）：**只接入自己承担配额管理的网关**。不承担配额的 gateway 留给 v1（那时再评估要不要 scanner 自建配额台）。
 
-## 7. 发布前检查清单
+---
 
-- [ ] 代码改动合并到 master（auth 逻辑 + 启动日志）
-- [ ] Railway 三个 env var 已设 + redeploy active
-- [ ] 测试矩阵 6 项全过
-- [ ] Railway logs 能看到 `AUTH_ENABLED=true mode=production` 启动行
-- [ ] RapidAPI Provider "Secret for your API" 已填（与 Railway `RAPIDAPI_PROXY_SECRET` 一致）
-- [ ] RapidAPI 后台 "Test Endpoint" 能跑通（说明网关→后端 secret 对上了）
-- [ ] 用一个不带任何 header 的裸 curl 再跑一次 Railway URL → 必须 401
-- [ ] Rate limit 仍然生效（12 个并发 POST，第 11/12 应 429）
-- [ ] 日志不打印 secret / api_key / Authorization 完整值
+## 6. 健康检查端点
+
+| 端点 | 用途 | 检查 | 失败行为 |
+|------|------|------|----------|
+| `/health/live` | Railway 容器存活探针 | 只验进程能响应 | 永远 200 |
+| `/health` | marketplace SLA 监控（RapidAPI / Zyla 轮询） | `rate_limiter.ping()` + `slither` 可执行 | 任一异常 → 503 `{"status":"degraded","checks":{…}}` |
+
+**为什么拆**：Redis 抖动不应让 Railway 重启容器（重启只放大事故 + 加 cold-start）。而 marketplace 应在 Redis 挂时**立刻** degrade，主动分流保 SLA。scanner 内部对 Redis 依旧 fail-open（见 §4.2），/health 仅上报状态、不阻塞业务路径。
+
+---
+
+## 7. 环境变量
+
+| env | 必须 | 默认 | 用途 |
+|-----|------|------|------|
+| `AUTH_ENABLED` | ⚠ 生产务必 `true` | `true` | 总开关。false 下所有请求放行并打 `X-Auth-Mode: disabled-test` |
+| `API_KEY` | 选 | `""` | 内部 bearer token（openssl rand -hex 32） |
+| `RAPIDAPI_PROXY_SECRET` | RapidAPI 上必须 | `""` | RapidAPI Dashboard → API Settings → "Secret for your API" 同值 |
+| `REDIS_URL` | 多实例必须 | `""` | 空 → InMemory fallback（WARN log，只适合单实例） |
+| `RATE_LIMIT_WINDOW` | 选 | `60` | 窗口秒数 |
+| `RATE_LIMIT_MAX` | 选 | `10` | marketplace 源每窗口最大请求数 |
+| `RATE_LIMIT_MAX_BEARER` | 选 | `600` | bearer 源每窗口最大请求数 |
+| `LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL` | 必须 | 见 `config.py` | 全局 LLM 默认值，per-tier 为空时 fallback |
+| `LLM_{BASE_URL,API_KEY,MODEL}_{FREE,STARTER,PRO,BUSINESS}` | 选 | `""` | per-tier 覆盖 |
+| `MAX_CONTRACT_SIZE` | 选 | `102400` | 提交合约字节上限 |
+
+**fail-safe 默认**：`AUTH_ENABLED` 未设 = true。若同时 `API_KEY` 和 `RAPIDAPI_PROXY_SECRET` 都空，启动时 `logger.critical`，且所有 `/api/*` 返 401——忘配 secret 时显式暴雷，不会静默放行。
+
+---
+
+## 8. 发布前自查清单
+
+- [ ] `AUTH_ENABLED=true` 且 `RAPIDAPI_PROXY_SECRET` / `API_KEY` 已配置，Railway logs 无 critical 告警
+- [ ] `REDIS_URL` 已注入，`/health` 返回 `rate_limiter.backend == "redis"` 且 status = ok
+- [ ] `/health/live` → 200
+- [ ] `/api/v1/scan/sync` 裸请求（无 header）→ 401 AUTH_REQUIRED
+- [ ] 带正确 `Authorization: Bearer <API_KEY>` → 200（scan 正常返回）
+- [ ] 带正确 `X-RapidAPI-Proxy-Secret` + `X-RapidAPI-User: testuser` → 200
+- [ ] 错的 token/secret → 401
+- [ ] 连续 11 次同一 bearer 冒烟请求 → 第 11 次 429，Retry-After 头存在
+- [ ] Railway logs 无 stack trace、无 "REDIS_URL not set" WARN、无打印 secret/api_key
+- [ ] RapidAPI Provider Dashboard "Test Endpoint" 通（说明网关→后端 secret 对齐）
 
 全部 ✅ 才 Submit for review。
 
-## 8. 未来扩展（不在本次范围）
+---
 
-- 按来源区分配额：`X-RapidAPI-User` header（RapidAPI 注入）→ per-user 计数
-- Request signing（HMAC）代替明文 secret，若 RapidAPI 支持
-- Structured audit log → Loki / Grafana
+## 9. 未来扩展（不在本次范围）
+
+- **Scanner-side 跨 gateway 配额**：只有当接入不管配额的 gateway 时才开工；届时 rate-limiter 模块会被扩成 quota 台，加月度周期 key。
+- **Request signing (HMAC)**：若 RapidAPI/Zyla 后续支持，替换明文 proxy secret。
+- **Structured audit log**：scan_id、external_user_id、tier、latency 推到 Loki/Grafana。
+- **Priority queue by tier**：pro/business 走独立 LLM 池，避免 free 流量饱和时影响付费。
+- **Per-plan cold-path 缓存**：相同 source_code + compiler 版本 → 缓存命中 → 跳 LLM。
